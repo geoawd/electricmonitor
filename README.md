@@ -90,3 +90,10 @@ Configuration module that defines electricity tariff rates for different time pe
         "standing_charge": 13.1,  # pence per day
     }
 }
+```
+
+## Webpage render
+![Alt text](https://github.com/geoawd/electricmonitor/blob/main/Energy%20Monitor%20-%20Detailed%20View.jpg "Electric Monitor Webpage")
+
+
+
