@@ -58,26 +58,7 @@ def get_detailed_data():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    cursor.execute("""
-        SELECT strftime('%Y-%m-%d %H:%M', timestamp, 'localtime') as minute,
-               COUNT(*) as pulse_count
-        FROM pulses
-        WHERE timestamp >= datetime('now', '-24 hours')
-        GROUP BY minute
-        ORDER BY minute
-    """)
-    minute_data = cursor.fetchall()
-    
-    cursor.execute("""
-        SELECT strftime('%Y-%m-%d %H', timestamp, 'localtime') as hour,
-               COUNT(*) as pulse_count
-        FROM pulses
-        WHERE timestamp >= datetime('now', '-7 days')
-        GROUP BY hour
-        ORDER BY hour
-    """)
-    hourly_data = cursor.fetchall()
-    
+    # Single query to get all the peak/off-peak data
     cursor.execute("""
         SELECT 
             strftime('%Y-%m-%d', timestamp, 'localtime') as day,
@@ -88,64 +69,53 @@ def get_detailed_data():
             SUM(CASE 
                 WHEN strftime('%H', timestamp, 'localtime') < '02' 
                 OR strftime('%H', timestamp, 'localtime') >= '09' 
-                THEN 1 ELSE 0 END) as peak_pulses
+                THEN 1 ELSE 0 END) as peak_pulses,
+            COUNT(*) as total_pulses
         FROM pulses
         WHERE timestamp >= datetime('now', '-7 days')
         GROUP BY day
         ORDER BY day
     """)
-    peak_split_data = cursor.fetchall()
     
+    data = cursor.fetchall()
     conn.close()
     
     # Process data for display
-    daily_summary = []
-    ev_summary = []  # New list for EV Anytime calculations
-    peak_split_data_processed = []
-    for day, off_peak, peak in peak_split_data:
+    consolidated_data = []
+    
+    for day_data in data:
+        day, off_peak_pulses, peak_pulses, total_pulses = day_data
+        
         # Get applicable rates for this day
         date_obj = datetime.strptime(day, '%Y-%m-%d').date()
         rates = get_rates_for_date(date_obj)
         
-        # Calculate total kWh
-        total_pulses = off_peak + peak
+        # Calculate kWh values
+        off_peak_kwh = off_peak_pulses / 3200
+        peak_kwh = peak_pulses / 3200
         total_kwh = total_pulses / 3200
         
         # Standard rate calculations
         standard_cost = (total_kwh * rates['standard']['unit_rate']/100) + (rates['standard']['standing_charge']/100)
         
+        # EV Anytime calculations
+        ev_anytime_cost = (total_kwh * rates['ev_anytime']['unit_rate']/100) + (rates['ev_anytime']['standing_charge']/100)
+        
         # Peak/Off-peak calculations
-        off_peak_kwh = off_peak / 3200
-        peak_kwh = peak / 3200
         off_peak_cost = off_peak_kwh * rates['peak_offpeak']['offpeak_rate']/100
         peak_cost = peak_kwh * rates['peak_offpeak']['peak_rate']/100
-        total_peak_cost = off_peak_cost + peak_cost + (rates['peak_offpeak']['standing_charge']/100)
+        ev_day_night_cost = off_peak_cost + peak_cost + (rates['peak_offpeak']['standing_charge']/100)
         
-        # EV Anytime calculations
-        ev_cost = (total_kwh * rates['ev_anytime']['unit_rate']/100) + (rates['ev_anytime']['standing_charge']/100)
-        
-        daily_summary.append({
-            'date': day,
-            'total_kwh': total_kwh,
-            'standard_cost': standard_cost
-        })
-        
-        ev_summary.append({
-            'date': day,
-            'total_kwh': total_kwh,
-            'ev_cost': ev_cost
-        })
-        
-        peak_split_data_processed.append({
+        consolidated_data.append({
             'date': day,
             'off_peak_kwh': off_peak_kwh,
             'peak_kwh': peak_kwh,
-            'off_peak_cost': off_peak_cost,
-            'peak_cost': peak_cost,
-            'total_cost': total_peak_cost
+            'standard_cost': standard_cost,
+            'ev_anytime_cost': ev_anytime_cost,
+            'ev_day_night_cost': ev_day_night_cost
         })
     
-    return minute_data, hourly_data, daily_summary, peak_split_data_processed, ev_summary
+    return consolidated_data
 
 def get_local_timezone():
     """Get the local timezone"""
@@ -251,9 +221,7 @@ def detailed():
     minute_data = get_minute_data(selected_date)
     hourly_data = get_hourly_data(selected_date)
     daily_peak_split = get_daily_peak_split(selected_date)
-    
-    # Get the detailed data which includes the energy cost calculations
-    _, _, daily_summary, peak_split_data, ev_summary = get_detailed_data()
+    consolidated_data = get_detailed_data()
     
     # Process data for charts
     minute_kwh = [(minute, count/3200) for minute, count in minute_data]
@@ -274,9 +242,7 @@ def detailed():
                          hourly_kwh=hourly_kwh,
                          selected_date=selected_date,
                          date_range=date_range,
-                         daily_summary=daily_summary,
-                         peak_split_data=peak_split_data,
-                         ev_summary=ev_summary)
+                         consolidated_data=consolidated_data)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

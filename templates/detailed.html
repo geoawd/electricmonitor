@@ -174,73 +174,40 @@
         <h1>Detailed Energy Analysis</h1>
 
         <div>
-            <h2>Daily Summary (Standard Rate)</h2>
+            <h2>Energy Usage and Cost Summary</h2>
             <table>
-            <thead>
-                <tr>
-                <th>Date</th>
-                <th>Total kWh</th>
-                <th>Cost (29.44p/kWh)</th>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Off-Peak kWh</th>
+                        <th>Peak kWh</th>
+                        <th>Standard Rate</th>
+                        <th>EV Anytime</th>
+                        <th>EV Day/Night</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for day in consolidated_data %}
+                    <tr>
+                        <td>{{ day.date }}</td>
+                        <td>{{ "%.2f"|format(day.off_peak_kwh) }}</td>
+                        <td>{{ "%.2f"|format(day.peak_kwh) }}</td>
+                        <td>£{{ "%.2f"|format(day.standard_cost) }}</td>
+                        <td>£{{ "%.2f"|format(day.ev_anytime_cost) }}</td>
+                        <td>£{{ "%.2f"|format(day.ev_day_night_cost) }}</td>
+                    </tr>
+                {% endfor %}
+                <tr style="font-weight: bold; border-top: 2px solid #e6e6e6;">
+                    <td>Total</td>
+                    <td>{{ "%.2f"|format(consolidated_data|sum(attribute='off_peak_kwh')) }}</td>
+                    <td>{{ "%.2f"|format(consolidated_data|sum(attribute='peak_kwh')) }}</td>
+                    <td>£{{ "%.2f"|format(consolidated_data|sum(attribute='standard_cost')) }}</td>
+                    <td>£{{ "%.2f"|format(consolidated_data|sum(attribute='ev_anytime_cost')) }}</td>
+                    <td>£{{ "%.2f"|format(consolidated_data|sum(attribute='ev_day_night_cost')) }}</td>
                 </tr>
-            </thead>
-            <tbody>
-            {% for day in daily_summary %}
-                <tr>
-                <td>{{ day.date }}</td>
-                <td>{{ "%.2f"|format(day.total_kwh) }}</td>
-                <td>£{{ "%.2f"|format(day.standard_cost) }}</td>
-                </tr>
-            {% endfor %}
-            </tbody>
+                </tbody>
             </table>
-
-            <h2>EV Anytime</h2>
-            <table>
-            <thead>
-                <tr>
-                <th>Date</th>
-                <th>Total kWh</th>
-                <th>Total Cost*</th>
-                </tr>
-            </thead>
-            <tbody>
-            {% for day in ev_summary %}
-                <tr>
-                <td>{{ day.date }}</td>
-                <td>{{ "%.2f"|format(day.total_kwh) }}</td>
-                <td>£{{ "%.2f"|format(day.ev_cost) }}</td>
-                </tr>
-            {% endfor %}
-            </tbody>
-            </table>
-            <small>* Includes 13.1p daily standing charge</small>
-
-            <h2>EV Day/Night Rate</h2>
-            <table>
-            <thead>
-                <tr>
-                <th>Date</th>
-                <th>Off-Peak kWh</th>
-                <th>Off-Peak Cost</th>
-                <th>Peak kWh</th>
-                <th>Peak Cost</th>
-                <th>Total Cost*</th>
-                </tr>
-            </thead>
-            <tbody>
-            {% for day in peak_split_data %}
-                <tr>
-                <td>{{ day.date }}</td>
-                <td>{{ "%.2f"|format(day.off_peak_kwh) }}</td>
-                <td>£{{ "%.2f"|format(day.off_peak_cost) }}</td>
-                <td>{{ "%.2f"|format(day.peak_kwh) }}</td>
-                <td>£{{ "%.2f"|format(day.peak_cost) }}</td>
-                <td>£{{ "%.2f"|format(day.total_cost) }}</td>
-                </tr>
-            {% endfor %}
-            </tbody>
-            </table>
-            <small>* Includes 13.1p daily standing charge</small>
+            <small>* All costs include daily standing charges (currently 13.1p/day)</small>
         </div>
 
         <div class="date-controls">
@@ -478,15 +445,15 @@
                         position: 'bottom',
                         labels: {
                             generateLabels: function(chart) {
-                                const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                                const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
                                 const colors = [
-                                    'rgb(75, 192, 192)',
                                     'rgb(255, 99, 132)',
                                     'rgb(255, 159, 64)',
                                     'rgb(54, 162, 235)',
                                     'rgb(153, 102, 255)',
                                     'rgb(255, 205, 86)',
-                                    'rgb(201, 203, 207)'
+                                    'rgb(201, 203, 207)',
+                                    'rgb(75, 192, 192)'
                                 ];
                                 return dayNames.map((day, index) => ({
                                     text: day,
