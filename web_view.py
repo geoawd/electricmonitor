@@ -5,7 +5,7 @@ import os
 from collections import defaultdict
 from config.energy_rates import get_rates_for_date
 import re
-import pytz
+import json
 
 app = Flask(__name__)
 
@@ -27,63 +27,119 @@ def is_valid_date(date_string):
     except ValueError:
         return False
 
-def get_pulse_data():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT strftime('%Y-%m-%d %H:00:00', timestamp, 'localtime') as hour,
-               COUNT(*) as pulse_count
-        FROM pulses
-        WHERE timestamp >= datetime('now', '-24 hours')
-        GROUP BY hour
-        ORDER BY hour
-    """)
-    hourly_data = cursor.fetchall()
-    
-    cursor.execute("""
-        SELECT strftime('%Y-%m-%d', timestamp, 'localtime') as day,
-               COUNT(*) as pulse_count
-        FROM pulses
-        WHERE timestamp >= datetime('now', '-7 days')
-        GROUP BY day
-        ORDER BY day
-    """)
-    daily_data = cursor.fetchall()
-    
-    conn.close()
-    return hourly_data, daily_data
+def pulses_to_kwh(pulses):
+    return pulses / 3200
 
-def get_detailed_data():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Single query to get all the peak/off-peak data
+def get_daily_energy_split(cursor, start_date, days_back=7):
+    """Get daily energy split between peak and off-peak hours"""
     cursor.execute("""
         SELECT 
-            strftime('%Y-%m-%d', timestamp, 'localtime') as day,
+            strftime('%Y-%m-%d', hour_timestamp, 'localtime') as day,
             SUM(CASE 
-                WHEN strftime('%H', timestamp, 'localtime') >= '02' 
-                AND strftime('%H', timestamp, 'localtime') < '09' 
-                THEN 1 ELSE 0 END) as off_peak_pulses,
+                WHEN strftime('%H', hour_timestamp, 'localtime') >= '02' 
+                AND strftime('%H', hour_timestamp, 'localtime') < '09' 
+                THEN pulse_count ELSE 0 END) as off_peak_pulses,
             SUM(CASE 
-                WHEN strftime('%H', timestamp, 'localtime') < '02' 
-                OR strftime('%H', timestamp, 'localtime') >= '09' 
-                THEN 1 ELSE 0 END) as peak_pulses,
-            COUNT(*) as total_pulses
-        FROM pulses
-        WHERE timestamp >= datetime('now', '-7 days')
+                WHEN strftime('%H', hour_timestamp, 'localtime') < '02' 
+                OR strftime('%H', hour_timestamp, 'localtime') >= '09' 
+                THEN pulse_count ELSE 0 END) as peak_pulses
+        FROM hourly_pulses
+        WHERE date(hour_timestamp, 'localtime') 
+            BETWEEN date(?, ?) AND date(?)
         GROUP BY day
         ORDER BY day
-    """)
+    """, (start_date, f'-{days_back} days', start_date))
     
-    data = cursor.fetchall()
+    # Convert pulse counts to kWh before returning
+    raw_data = cursor.fetchall()
+    return [(day, pulses_to_kwh(off_peak), pulses_to_kwh(peak)) 
+            for day, off_peak, peak in raw_data]
+
+def get_all_energy_data(start_date=None):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    if not start_date:
+        start_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Get minute data, hourly data, date range, and daily split in one connection
+    cursor.execute("""
+        WITH minute_data AS (
+            SELECT strftime('%Y-%m-%d %H:%M', timestamp, 'localtime') as minute,
+                   COUNT(*) as pulse_count
+            FROM pulses
+            WHERE date(timestamp, 'localtime') = ?
+            GROUP BY minute
+        ),
+        hourly_data AS (
+            SELECT strftime('%Y-%m-%d %H:00', hour_timestamp, 'localtime') as hour,
+                   pulse_count
+            FROM hourly_pulses
+            WHERE date(hour_timestamp, 'localtime') BETWEEN date(?, '-6 days') AND date(?)
+        ),
+        date_range AS (
+            SELECT MIN(date(timestamp)) as min_date, 
+                   MAX(date(timestamp)) as max_date 
+            FROM pulses
+        )
+        SELECT 
+            'minute' as type, minute as timestamp, pulse_count, NULL, NULL, NULL
+        FROM minute_data
+        UNION ALL
+        SELECT 
+            'hour' as type, hour, pulse_count, NULL, NULL, NULL
+        FROM hourly_data
+        UNION ALL
+        SELECT 
+            'range' as type, NULL, NULL, NULL, NULL, 
+            json_object('min', min_date, 'max', max_date)
+        FROM date_range;
+    """, (start_date, start_date, start_date))
+    
+    results = cursor.fetchall()
+    
+    # Get daily split using shared function - but extend it to get 7 days for detailed data
+    daily_split = get_daily_energy_split(cursor, start_date, 6)
+    
+    # Get detailed daily data with costs (7 days from start_date)
+    cursor.execute("""
+        SELECT 
+            strftime('%Y-%m-%d', hour_timestamp, 'localtime') as day,
+            SUM(CASE 
+                WHEN strftime('%H', hour_timestamp, 'localtime') >= '02' 
+                AND strftime('%H', hour_timestamp, 'localtime') < '09' 
+                THEN pulse_count ELSE 0 END) as off_peak_pulses,
+            SUM(CASE 
+                WHEN strftime('%H', hour_timestamp, 'localtime') < '02' 
+                OR strftime('%H', hour_timestamp, 'localtime') >= '09' 
+                THEN pulse_count ELSE 0 END) as peak_pulses,
+            SUM(pulse_count) as total_pulses
+        FROM hourly_pulses
+        WHERE date(hour_timestamp, 'localtime') 
+            BETWEEN date(?, '-6 days') AND date(?)
+        GROUP BY day
+        ORDER BY day
+    """, (start_date, start_date))
+    
+    detailed_daily_data = cursor.fetchall()
     conn.close()
-    
-    # Process data for display
+
+    # Process results
+    minute_data = []
+    hourly_data = []
+    date_range = None
+
+    for row in results:
+        if row[0] == 'minute':
+            minute_data.append((row[1], row[2]))
+        elif row[0] == 'hour':
+            hourly_data.append((row[1], row[2]))
+        elif row[0] == 'range':
+            date_range = json.loads(row[5])
+
+    # Process detailed daily data with cost calculations
     consolidated_data = []
-    
-    for day_data in data:
+    for day_data in detailed_daily_data:
         day, off_peak_pulses, peak_pulses, total_pulses = day_data
         
         # Get applicable rates for this day
@@ -91,9 +147,9 @@ def get_detailed_data():
         rates = get_rates_for_date(date_obj)
         
         # Calculate kWh values
-        off_peak_kwh = off_peak_pulses / 3200
-        peak_kwh = peak_pulses / 3200
-        total_kwh = total_pulses / 3200
+        off_peak_kwh = pulses_to_kwh(off_peak_pulses)
+        peak_kwh = pulses_to_kwh(peak_pulses)
+        total_kwh = pulses_to_kwh(total_pulses)
         
         # Standard rate calculations
         standard_cost = (total_kwh * rates['standard']['unit_rate']/100) + (rates['standard']['standing_charge']/100)
@@ -114,99 +170,16 @@ def get_detailed_data():
             'ev_anytime_cost': ev_anytime_cost,
             'ev_day_night_cost': ev_day_night_cost
         })
-    
-    return consolidated_data
 
-def get_local_timezone():
-    """Get the local timezone"""
-    return pytz.timezone('Europe/London')
-
-def get_minute_data(start_date=None):
-    """Get minute data for a specific day, defaults to last 24 hours"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    if start_date:
-        cursor.execute("""
-            SELECT strftime('%Y-%m-%d %H:%M', timestamp, 'localtime') as minute,
-                   COUNT(*) as pulse_count
-            FROM pulses
-            WHERE date(timestamp, 'localtime') = ?
-            GROUP BY minute
-            ORDER BY minute
-        """, (start_date,))
-    else:
-        cursor.execute("""
-            SELECT strftime('%Y-%m-%d %H:%M', timestamp) as minute,
-                   COUNT(*) as pulse_count
-            FROM pulses
-            WHERE timestamp >= datetime('now', '-24 hours')
-            GROUP BY minute
-            ORDER BY minute
-        """)
-    
-    data = cursor.fetchall()
-    conn.close()
-    return data
-
-def get_hourly_data(start_date=None, days=7):
-    """Get hourly data for a specific period"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    if start_date:
-        cursor.execute("""
-            SELECT strftime('%Y-%m-%d %H:00', timestamp, 'localtime') as hour,
-                   COUNT(*) as pulse_count
-            FROM pulses
-            WHERE date(timestamp, 'localtime') BETWEEN date(?, '-6 days') AND date(?)
-            GROUP BY hour
-            ORDER BY hour
-        """, (start_date, start_date))
-    else:
-        cursor.execute("""
-            SELECT strftime('%Y-%m-%d %H:00', timestamp, 'localtime') as hour,
-                   COUNT(*) as pulse_count
-            FROM pulses
-            WHERE timestamp >= datetime('now', '-7 days')
-            GROUP BY hour
-            ORDER BY hour
-        """)
-    
-    data = cursor.fetchall()
-    conn.close()
-    return data
-
-def get_daily_peak_split(start_date=None, days=7):
-    """Get daily peak/off-peak split for stacked bar chart"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    if start_date:
-        query_date = start_date
-    else:
-        query_date = datetime.now().strftime('%Y-%m-%d')
-    
-    cursor.execute("""
-        SELECT 
-            strftime('%Y-%m-%d', timestamp) as day,
-            SUM(CASE 
-                WHEN strftime('%H', timestamp) >= '02' 
-                AND strftime('%H', timestamp) < '09' 
-                THEN 1 ELSE 0 END) / 3200.0 as off_peak_kwh,
-            SUM(CASE 
-                WHEN strftime('%H', timestamp) < '02' 
-                OR strftime('%H', timestamp) >= '09' 
-                THEN 1 ELSE 0 END) / 3200.0 as peak_kwh
-        FROM pulses
-        WHERE date(timestamp) BETWEEN date(?, '-6 days') AND date(?)
-        GROUP BY day
-        ORDER BY day
-    """, (query_date, query_date))
-    
-    data = cursor.fetchall()
-    conn.close()
-    return data
+    return {
+        'minute_data': minute_data,
+        'minute_kwh': [(m[0], pulses_to_kwh(m[1])) for m in minute_data],
+        'hourly_data': hourly_data,
+        'hourly_kwh': [(h[0], pulses_to_kwh(h[1])) for h in hourly_data],
+        'daily_peak_split': daily_split,
+        'date_range': (date_range['min'], date_range['max']),
+        'consolidated_data': consolidated_data  # Add this to the return
+    }
 
 @app.route('/')
 def detailed():
@@ -217,32 +190,18 @@ def detailed():
     
     selected_date = date_param or datetime.now().strftime('%Y-%m-%d')
     
-    # Get all the required data
-    minute_data = get_minute_data(selected_date)
-    hourly_data = get_hourly_data(selected_date)
-    daily_peak_split = get_daily_peak_split(selected_date)
-    consolidated_data = get_detailed_data()
-    
-    # Process data for charts
-    minute_kwh = [(minute, count/3200) for minute, count in minute_data]
-    hourly_kwh = [(hour, count/3200) for hour, count in hourly_data]
-    
-    # Get date range for datepicker min/max
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT MIN(date(timestamp)), MAX(date(timestamp)) FROM pulses")
-    date_range = cursor.fetchone()
-    conn.close()
+    # Get all data in one query - now includes consolidated_data
+    data = get_all_energy_data(selected_date)
     
     return render_template('detailed.html',
-                         minute_data=minute_data,
-                         hourly_data=hourly_data,
-                         daily_peak_split=daily_peak_split,
-                         minute_kwh=minute_kwh,
-                         hourly_kwh=hourly_kwh,
+                         minute_data=data['minute_data'],
+                         hourly_data=data['hourly_data'],
+                         daily_peak_split=data['daily_peak_split'],
+                         minute_kwh=data['minute_kwh'],
+                         hourly_kwh=data['hourly_kwh'],
                          selected_date=selected_date,
-                         date_range=date_range,
-                         consolidated_data=consolidated_data)
-
+                         date_range=data['date_range'],
+                         consolidated_data=data['consolidated_data'])
+    
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)
