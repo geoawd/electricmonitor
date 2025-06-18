@@ -14,15 +14,17 @@ Change log: Version: 0.4
 -- added creation of hourly_pulses table
 
 Change log: Version: 0.5
--- 
-
+-- Added automatic hourly pulse count updates
+-- Added threading to handle pulse updates without interrupting monitoring
 '''
 
 from gpiozero import LightSensor
-from datetime import datetime
+from datetime import datetime, timezone
 import sqlite3
 import os
 import time
+import threading
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # Change GPIO Pin 24 to suit
 sensor = LightSensor(24, queue_len=1, threshold=0.01)
@@ -42,6 +44,10 @@ def create_local_db():
     try:
         conn = sqlite3.connect(DB_PATH)
         curs = conn.cursor()
+        
+        # Enable Write-Ahead Logging mode
+        curs.execute("PRAGMA journal_mode=WAL")
+        
         curs.execute("""
             CREATE TABLE IF NOT EXISTS pulses(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,6 +71,8 @@ def store_pulse(conn, max_retries=3, retry_delay=0.1):
     retries = 0
     while retries < max_retries:
         try:
+            # Set timeout to 5 seconds
+            conn = sqlite3.connect(DB_PATH, timeout=3)
             curs = conn.cursor()
             curs.execute("INSERT INTO pulses DEFAULT VALUES")
             conn.commit()
@@ -80,11 +88,72 @@ def store_pulse(conn, max_retries=3, retry_delay=0.1):
             print(f" - Error storing pulse: {e} [{datetime.now()}]", flush=True)
             return False
 
+def update_hourly_pulses(db_path, max_retries=3, retry_delay=0.1):
+    """Updates the hourly_pulses table with total pulse counts using UTC/GMT timestamps"""
+    retries = 0
+    while retries < max_retries:
+        try:
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            
+            current_time = datetime.now(timezone.utc)
+            current_hour = current_time.replace(minute=0, second=0, microsecond=0)
+            
+            # First, delete any existing entries for the current hour
+            cur.execute("""
+                DELETE FROM hourly_pulses 
+                WHERE hour_timestamp = ?
+            """, (current_hour.strftime('%Y-%m-%d %H:00:00'),))
+            
+            # Then insert the new count
+            cur.execute("""
+                INSERT INTO hourly_pulses (hour_timestamp, pulse_count)
+                SELECT 
+                    strftime('%Y-%m-%d %H:00:00', timestamp) as hour_timestamp,
+                    COUNT(*) as pulse_count
+                FROM pulses
+                WHERE strftime('%Y-%m-%d %H:00:00', timestamp) = ?
+                GROUP BY strftime('%Y-%m-%d %H:00:00', timestamp)
+            """, (current_hour.strftime('%Y-%m-%d %H:00:00'),))
+            
+            conn.commit()
+            
+            if verbose > 0:
+                print(f" + Updated hourly pulses at {current_time} UTC", flush=True)
+            return True
+            
+        except sqlite3.Error as e:
+            if "database is locked" in str(e):
+                retries += 1
+                if retries < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+            print(f" - Error updating hourly pulses: {e} [{datetime.now(timezone.utc)}]", flush=True)
+            return False
+        finally:
+            if conn:
+                conn.close()
+
+def start_scheduler(db_path):
+    """Starts the background scheduler for updating hourly pulses"""
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        lambda: update_hourly_pulses(db_path), 
+        'cron',
+        minute='15,30,45,59'
+    )
+    scheduler.start()
+    print(f" + Hourly pulse update scheduler started [{datetime.now()}]", flush=True)
+    return scheduler
+
 # Initialize database connection
 conn = create_local_db()
 if not conn:
     print(" - Failed to initialize database. Exiting.", flush=True)
     exit(1)
+
+# Start the scheduler
+scheduler = start_scheduler(DB_PATH)
 
 # Main loop
 try:
@@ -108,4 +177,5 @@ try:
 
 except KeyboardInterrupt:
     print(f"\n + Shutting down [{datetime.now()}]", flush=True)
+    scheduler.shutdown()
     conn.close()
