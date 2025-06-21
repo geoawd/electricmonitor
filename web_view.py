@@ -1,8 +1,7 @@
 from flask import Flask, render_template, request
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 import os
-from collections import defaultdict
 from config.energy_rates import get_rates_for_date
 import re
 import json
@@ -99,7 +98,7 @@ def get_all_energy_data(start_date=None):
     results = cursor.fetchall()
     
     # Get daily split using shared function - but extend it to get 7 days for detailed data
-    daily_split = get_daily_energy_split(cursor, start_date, 6)
+    daily_split = get_daily_energy_split(cursor, start_date, 13)
     
     # Get detailed daily data with costs (7 days from start_date)
     cursor.execute("""
@@ -116,7 +115,7 @@ def get_all_energy_data(start_date=None):
             SUM(pulse_count) as total_pulses
         FROM hourly_pulses
         WHERE date(hour_timestamp, 'localtime') 
-            BETWEEN date(?, '-6 days') AND date(?)
+            BETWEEN date(?, '-13 days') AND date(?)
         GROUP BY day
         ORDER BY day
     """, (start_date, start_date))
