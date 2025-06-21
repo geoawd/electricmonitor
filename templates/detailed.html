@@ -181,6 +181,7 @@
                         <th>Date</th>
                         <th>Off-Peak kWh</th>
                         <th>Peak kWh</th>
+                        <th>Total kWh</th>
                         <th>Standard Rate</th>
                         <th>EV Anytime*</th>
                         <th>EV Day/Night*</th>
@@ -192,15 +193,37 @@
                         <td>{{ day.date }}</td>
                         <td>{{ "%.2f"|format(day.off_peak_kwh) }}</td>
                         <td>{{ "%.2f"|format(day.peak_kwh) }}</td>
-                        <td>£{{ "%.2f"|format(day.standard_cost) }}</td>
-                        <td>£{{ "%.2f"|format(day.ev_anytime_cost) }}</td>
-                        <td>£{{ "%.2f"|format(day.ev_day_night_cost) }}</td>
+                        <td>{{ "%.2f"|format(day.off_peak_kwh + day.peak_kwh) }}</td>
+                        {% set costs = [day.standard_cost, day.ev_anytime_cost, day.ev_day_night_cost] %}
+                        {% set min_cost = costs|min %}
+                        <td>
+                            {% if day.standard_cost == min_cost %}
+                                <b>£{{ "%.2f"|format(day.standard_cost) }}</b>
+                            {% else %}
+                                £{{ "%.2f"|format(day.standard_cost) }}
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if day.ev_anytime_cost == min_cost %}
+                                <b>£{{ "%.2f"|format(day.ev_anytime_cost) }}</b>
+                            {% else %}
+                                £{{ "%.2f"|format(day.ev_anytime_cost) }}
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if day.ev_day_night_cost == min_cost %}
+                                <b>£{{ "%.2f"|format(day.ev_day_night_cost) }}</b>
+                            {% else %}
+                                £{{ "%.2f"|format(day.ev_day_night_cost) }}
+                            {% endif %}
+                        </td>
                     </tr>
                 {% endfor %}
                 <tr style="font-weight: bold; border-top: 2px solid #e6e6e6;">
                     <td>Total</td>
                     <td>{{ "%.2f"|format(consolidated_data|sum(attribute='off_peak_kwh')) }}</td>
                     <td>{{ "%.2f"|format(consolidated_data|sum(attribute='peak_kwh')) }}</td>
+                    <td>{{ "%.2f"|format(consolidated_data|sum(attribute='off_peak_kwh') + consolidated_data|sum(attribute='peak_kwh')) }}</td>
                     <td>£{{ "%.2f"|format(consolidated_data|sum(attribute='standard_cost')) }}</td>
                     <td>£{{ "%.2f"|format(consolidated_data|sum(attribute='ev_anytime_cost')) }}</td>
                     <td>£{{ "%.2f"|format(consolidated_data|sum(attribute='ev_day_night_cost')) }}</td>
@@ -545,7 +568,7 @@
                     },
                     title: {
                         display: true,
-                        text: '7-Day Daily Peak/Off-Peak Split'
+                        text: 'Daily Peak/Off-Peak Split'
                     }
                 }
             }
