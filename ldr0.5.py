@@ -37,7 +37,7 @@ print(f" + Started [{datetime.now()}]", flush=True)
 print(f" + Using GPIO Pin: {sensor.pin.number}", flush=True)
 
 # Database path - store in same directory as script
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "energy.db")
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "energy_new.db")
 
 def create_local_db():
     """Create SQLite Database if it doesn't exist"""
